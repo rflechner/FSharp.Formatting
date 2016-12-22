@@ -13,7 +13,27 @@ open System.Collections.Generic
 /// split it into a sequence of comments, snippets and commands (comment starts with 
 /// `(**` and ending with `*)` are translated to Markdown, snippet is all other F# code 
 /// and command looks like `(*** key1:value, key2:value ***)` (and should be single line).
+
+type ScriptParsingConfig =
+    { OpenCommentToken : string
+      CloseCommentToken : string }
+    static member Fsharp = 
+      { OpenCommentToken="("; CloseCommentToken=")" }
+    static member Csharp = 
+      { OpenCommentToken="/"; CloseCommentToken="/" }
+    member __.ConcatenatedClosure =
+      "***" + __.CloseCommentToken
+    member __.ConcatenatedOpening =
+      __.OpenCommentToken + "***"
+    member __.Closure =
+      "*" + __.CloseCommentToken
+    member __.Opening =
+      __.OpenCommentToken + "*"
+    member __.DoubleAsterixOpening =
+      __.OpenCommentToken + "**"
+
 module internal CodeBlockUtils =
+  
   type Block = 
     | BlockComment of string
     | BlockSnippet of Line list 
@@ -47,66 +67,66 @@ module internal CodeBlockUtils =
   //    (in both states, we also need to recognize (*** commands ***)
 
   /// Waiting for the end of a comment      
-  let rec private collectComment (comment:string) lines = seq {
+  let rec private collectComment (comment:string) lines (conf:ScriptParsingConfig) = seq {
     let findCommentEnd (comment:string) =
-        let cend = comment.LastIndexOf("*)")
-        if cend = -1 then failwith "A (* comment was not closed"
+        let cend = comment.LastIndexOf conf.Closure
+        if cend = -1 then failwith "A comment was not closed"
         cend
 
     match lines with
-    | (ConcatenatedComments(String.StartsAndEndsWith ("(***", "***)") (ParseCommands cmds)))::lines ->
+    | (ConcatenatedComments(String.StartsAndEndsWith (conf.ConcatenatedOpening, conf.ConcatenatedClosure) (ParseCommands cmds)))::lines ->
         // Ended with a command, yield comment, command & parse the next as a snippet
         let cend = findCommentEnd comment
         yield BlockComment (comment.Substring(0, cend))
         yield BlockCommand cmds
-        yield! collectSnippet [] lines
+        yield! collectSnippet [] lines conf
 
     | (ConcatenatedComments text)::_ when 
-        comment.LastIndexOf("*)") <> -1 && text.Trim().StartsWith("//") ->
+        comment.LastIndexOf(conf.Closure) <> -1 && text.Trim().StartsWith("//") ->
         // Comment ended, but we found a code snippet starting with // comment
         let cend = findCommentEnd comment
         yield BlockComment (comment.Substring(0, cend))
-        yield! collectSnippet [] lines
+        yield! collectSnippet [] lines conf
 
-    | (Line[Token(TokenKind.Comment, String.StartsWith "(**" text, _)])::lines ->
+    | (Line[Token(TokenKind.Comment, String.StartsWith conf.DoubleAsterixOpening text, _)])::lines ->
         // Another block of Markdown comment starting... 
         // Yield the previous snippet block and continue parsing more comments
         let cend = findCommentEnd comment
         yield BlockComment (comment.Substring(0, cend))
-        if lines <> [] then yield! collectComment text lines
+        if lines <> [] then yield! collectComment text lines conf
 
     | (ConcatenatedComments text)::lines  ->
         // Continue parsing comment
-        yield! collectComment (comment + "\n" + text) lines
+        yield! collectComment (comment + "\n" + text) lines conf
 
     | lines ->
         // Ended - yield comment & continue parsing snippet
         let cend = findCommentEnd comment
         yield BlockComment (comment.Substring(0, cend))
-        if lines <> [] then yield! collectSnippet [] lines }
+        if lines <> [] then yield! collectSnippet [] lines conf }
 
 
 
   /// Collecting a block of F# snippet
-  and private collectSnippet acc lines = 
+  and private collectSnippet acc lines conf = 
     let blockSnippet acc =
       let res = trimBlanksAndReverse acc 
       BlockSnippet res
     seq {
       match lines with 
-      | (ConcatenatedComments(String.StartsAndEndsWith ("(***", "***)") (ParseCommands cmds)))::lines ->
+      | (ConcatenatedComments(String.StartsAndEndsWith (conf.ConcatenatedOpening, conf.ConcatenatedClosure) (ParseCommands cmds)))::lines ->
           // Found a special command, yield snippet, command and parse another snippet
           if acc <> [] then yield blockSnippet acc
           yield BlockCommand cmds
-          yield! collectSnippet [] lines
+          yield! collectSnippet [] lines conf
 
-      | (Line[Token(TokenKind.Comment, String.StartsWith "(**" text, _)])::lines ->
+      | (Line[Token(TokenKind.Comment, String.StartsWith conf.DoubleAsterixOpening text, _)])::lines ->
           // Found a comment - yield snippet & switch to parsing comment state
           // (Also trim leading spaces to support e.g.: `(** ## Hello **)`)
           if acc <> [] then yield blockSnippet acc
-          yield! collectComment (text.TrimStart()) lines
+          yield! collectComment (text.TrimStart()) lines conf
 
-      | x::xs ->  yield! collectSnippet (x::acc) xs
+      | x::xs ->  yield! collectSnippet (x::acc) xs conf
       | [] -> yield blockSnippet acc }
 
   /// Parse F# script file into a sequence of snippets, comments and commands
@@ -194,7 +214,7 @@ module internal ParseScript =
 
   /// Parse script file with specified name and content
   /// and return `LiterateDocument` with the content
-  let parseScriptFile file content (ctx:CompilerContext) =
+  let parseScriptFile file content (ctx:CompilerContext) conf =
     let sourceSnippets, errors = 
       ctx.FormatAgent.ParseSource
         (file, content, ?options = ctx.CompilerOptions, ?defines = ctx.DefinedSymbols)
@@ -203,7 +223,8 @@ module internal ParseScript =
       [ for Snippet(name, lines) in sourceSnippets do
           if name <> null then 
             yield BlockComment("## " + name)
-          yield! parseScriptFile(lines) ]
+          yield! parseScriptFile lines conf ]
 
     let paragraphs, defs = transformBlocks false [] [] (List.ofSeq parsedBlocks)
     LiterateDocument(paragraphs, "", defs, LiterateSource.Script sourceSnippets, file, errors)
+

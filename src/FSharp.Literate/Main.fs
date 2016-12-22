@@ -65,16 +65,23 @@ type Literate private () =
   static member ParseScriptFile 
     ( path, ?formatAgent, ?compilerOptions, ?definedSymbols, ?references, ?fsiEvaluator ) =
     let ctx = parsingContext formatAgent fsiEvaluator compilerOptions definedSymbols
-    ParseScript.parseScriptFile path (File.ReadAllText path) ctx
+    ParseScript.parseScriptFile path (File.ReadAllText path) ctx ScriptParsingConfig.Fsharp
     |> transform references
     |> Transformations.formatCodeSnippets path ctx
     |> Transformations.evaluateCodeSnippets ctx
+  
+  static member ParseCsharpScriptFile
+    ( path, ?formatAgent, ?compilerOptions, ?definedSymbols, ?references ) =
+    let ctx = parsingContext formatAgent None compilerOptions definedSymbols //TODO csharp evaluator
+    ParseScript.parseScriptFile path (File.ReadAllText path) ctx ScriptParsingConfig.Csharp
+    |> transform references
+    |> Transformations.formatCodeSnippets path ctx
 
   /// Parse F# Script file
   static member ParseScriptString 
     ( content, ?path, ?formatAgent, ?compilerOptions, ?definedSymbols, ?references, ?fsiEvaluator ) =
     let ctx = parsingContext formatAgent fsiEvaluator compilerOptions definedSymbols
-    ParseScript.parseScriptFile (defaultArg path "C:\\Document.fsx") content ctx
+    ParseScript.parseScriptFile (defaultArg path "C:\\Document.fsx") content ctx ScriptParsingConfig.Fsharp
     |> transform references
     |> Transformations.formatCodeSnippets (defaultArg path "C:\\Document.fsx") ctx
     |> Transformations.evaluateCodeSnippets ctx
@@ -172,6 +179,18 @@ type Literate private () =
     let doc = customize customizeDocument ctx doc
     Templating.processFile assemblyReferences doc (defaultOutput output input format) ctx
 
+  /// Process C# Script file
+  static member ProcessCsharpScriptFile
+    ( input, ?templateFile, ?output, ?format, ?formatAgent, ?prefix, ?compilerOptions, 
+      ?lineNumbers, ?references, ?replacements, ?includeSource, ?layoutRoots,
+      ?generateAnchors, ?assemblyReferences, ?customizeDocument ) =
+    let doc = 
+      Literate.ParseCsharpScriptFile
+        ( input, ?formatAgent=formatAgent, ?compilerOptions=compilerOptions, 
+          ?references = references )
+    let ctx = formattingContext templateFile format prefix lineNumbers includeSource generateAnchors replacements layoutRoots
+    let doc = customize customizeDocument ctx doc //ScriptParsingConfig.Csharp
+    Templating.processFile assemblyReferences doc (defaultOutput output input format) ctx
 
   /// Process directory containing a mix of Markdown documents and F# Script files
   static member ProcessDirectory
@@ -180,6 +199,13 @@ type Literate private () =
       ?assemblyReferences, ?processRecursive, ?customizeDocument  ) =
     let processRecursive = defaultArg processRecursive true
     // Call one or the other process function with all the arguments
+    let processCsharpScriptFile file output = 
+      Literate.ProcessCsharpScriptFile
+        ( file, ?templateFile = templateFile, output = output, ?format = format, 
+          ?formatAgent = formatAgent, ?prefix = prefix, ?compilerOptions = compilerOptions, 
+          ?lineNumbers = lineNumbers, ?references = references, ?replacements = replacements, 
+          ?includeSource = includeSource, ?layoutRoots = layoutRoots, ?generateAnchors = generateAnchors,
+          ?assemblyReferences = assemblyReferences, ?customizeDocument = customizeDocument )
     let processScriptFile file output = 
       Literate.ProcessScriptFile
         ( file, ?templateFile = templateFile, output = output, ?format = format, 
@@ -204,8 +230,8 @@ type Literate private () =
 
       let fsx = [ for f in Directory.GetFiles(indir, "*.fsx") -> processScriptFile, f ]
       let mds = [ for f in Directory.GetFiles(indir, "*.md") -> processMarkdown, f ]
-      //let csx = [ for f in Directory.GetFiles(indir, "*.csx") -> processScriptFile, f ]
-      for func, file in fsx @ mds do
+      let csx = [ for f in Directory.GetFiles(indir, "*.csx") -> processCsharpScriptFile, f ]
+      for func, file in fsx @ mds @ csx do
         let dir = Path.GetDirectoryName(file)
         let name = Path.GetFileNameWithoutExtension(file)
         let ext = (match format with Some OutputKind.Latex -> "tex" | _ -> "html")
