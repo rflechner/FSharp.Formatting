@@ -204,6 +204,7 @@ type Literate private () =
 
       let fsx = [ for f in Directory.GetFiles(indir, "*.fsx") -> processScriptFile, f ]
       let mds = [ for f in Directory.GetFiles(indir, "*.md") -> processMarkdown, f ]
+      //let csx = [ for f in Directory.GetFiles(indir, "*.csx") -> processScriptFile, f ]
       for func, file in fsx @ mds do
         let dir = Path.GetDirectoryName(file)
         let name = Path.GetFileNameWithoutExtension(file)
